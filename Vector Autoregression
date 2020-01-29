@@ -1,0 +1,105 @@
+### Goal: How do financial cycles affect interest rates and exchange rates? Current code structure only includes 2 variables; Canadian 3 month interest rate and Canadian 10 year interest rate. More variables will be included as the model is further developed. 
+## Some Code is developed by Huber,Kastner,& Feldkircher(2019)
+
+rm(list = ls())
+library(ggplot2)
+library(reshape2)
+library(matrixStats)
+#Import Data
+termstr <- read.csv("/Users/geoffreyaparker/Documents/R&Python&Matlab/R Code/TERM_STRUCTURE.csv",header = TRUE, na.strings = "")
+head(termstr)
+dates <- termstr[,"Date"]
+sr <- termstr[,"X3MBR"]
+lr <- termstr[,"X10YBR"]
+# Convert to Data Frame
+sr <- (diff(sr))
+lr <- (diff(lr))
+
+#Y is defined in the recursive order 
+Yraw <- cbind(sr,lr)
+class(Yraw) <- "numeric"
+
+
+# Lag Order & Calibrate the rows, etc..
+p = 4
+n = as.numeric(length(Y))
+h = 20 #Horizons for IRF
+Traw <- as.numeric(nrow(Y))
+N <- as.numeric(ncol(Y)) 
+z <- p*N # Columns Times Number of Lags 
+M <- as.numeric(ncol(Y))
+varndxv <- c(M,1,p) # For State Space Structure 
+
+# Create Lag Matrix Function For Y_t-1 & Y_t-2
+Y_l <- function(X,lag)
+{
+  p <- lag
+  X <- as.matrix(X)
+  Xlag <- matrix(0,Traw,z)
+  for (ii in 1:p){
+    Xlag[(p+1):Traw,(N*(ii-1)+1):(N*ii)]=X[(p+1-ii):(Traw-ii),(1:N)]
+  }
+  return(Xlag)
+}
+
+# Apply Function for Y_L
+Xlag <- Y_l(Y,p)
+Y <- Y[(p+1):nrow(Y),,drop = FALSE]
+X <- cbind(Xlag[(p+1):nrow(Xlag),],1)
+
+# More Misc - for Cholesky Factorization
+TT <- as.numeric(ncol(X))
+PP <- as.numeric(ncol(Y))
+
+# Estimate VAR by OLS 
+M <- solve(t(X) %*% X)
+A <- M %*% t(X) %*% Y
+
+# Residuals 
+E <- Y - X %*% A
+E.std <- rstandard(as.numeric(E))
+Corre <- cor(Res)
+
+# VAR(2) can be represented as a VAR(1) through a State Space Structure 
+var_companion_matrix <- function(beta,varndxv){
+  nn <- varndxv[[1]]
+  nd <- varndxv[[2]]
+  nl <- varndxv[[3]]
+
+  
+  n_kk <- nn*nd+nl  # Create a 2(2+1) = 5x5 matrix 
+  
+  Qm <- matrix(0,n_kk,nn)
+  Qm[1:nn,1:nn] <- diag(nn)
+  if(nd==1){
+    MM <- rbind(t(beta), cbind(diag((nl-1)*nn), 
+                              matrix(0,(nl-1)*nn,nn+1)),c(matrix(0,1,nn*nl),1))}else{
+    MM <- rbind(t(beta),cbind(diag((nl-1)*nn),matrix(0,(nl-1)*nn),nn))  
+    } 
+  return(list(MM=MM,Qm=Qm))
+} 
+  
+SS <- var_companion_matrix(A,varndxv)
+
+#Impulse Response Functions - By Cholesky
+# Get Variances and Covariance 
+Ress <- (E%*%t(E))
+Bottom <- (Traw-p-z- 1)
+SIGMA <- (Ress/Bottom)
+# SIGMA cannot be orthagonalized in it's current structure. Therefore create an TTxTT () 
+# matrix and insert values from SIGMA.Sqr to SIGMA
+SIGMA.sqr <- matrix(0,TT,TT)
+SIGMA.sqr[1:N,1:N] <- SIGMA
+
+
+
+# Impulse Response Function 
+
+IRF <- function(){}
+
+
+
+
+
+
+
