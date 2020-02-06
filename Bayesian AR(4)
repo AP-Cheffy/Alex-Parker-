@@ -1,5 +1,5 @@
 ### Following Code is Replication from the following link https://www.kaggle.com/dfoly1/bayesian-regression-blog-post. However it has been changed to Canadian Real GDP and 4 Lags is used to capture the dynamics of the system. Current Work in Progress to increase the dimenesions of the system to K Canadian Variables.
-## Estimation procedure follows a Gibb Sampling approach for drawing posterior estimatons for forecasting.
+## Estimation procedure follows a Gibb Sampling approach for drawing from the posterior for forecasting.
 
 
 ## End goal is to extend the current order to include IRF and furthermore counterfactual simulations over the specified horizon. 
@@ -34,9 +34,7 @@ ar_companion_matrix <- function(beta){
 
 
 ## Load Data and Define Real GDP  
-
-xdata <- read.csv("/Users/geoffreyaparker/Documents/R&Python&Matlab/R Code/Data_2GDP.csv",header = TRUE, na.strings = "")
-head(xdata)
+### USE WHAT FILE PATH DESIRED
 GDP <- xdata[,"GDP"]
 Def  <- xdata[,"Deflator"]
 Y <- data.frame(diff(log(GDP/Def))*100)
