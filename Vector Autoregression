@@ -8,8 +8,6 @@ library(matrixStats)
 library(compiler)
 library(tseries)
 #Import Data
-termstr <- read.csv("/Users/geoffreyaparker/Documents/R&Python&Matlab/R Code/TERM_STRUCTURE.csv",header = TRUE, na.strings = "")
-head(termstr)
 sr <- as.vector(termstr[,"X3MBR"])
 lr <-  as.vector((termstr[,"X10YBR"]))
 ex <-  as.vector((termstr[,"ExCan"]))
