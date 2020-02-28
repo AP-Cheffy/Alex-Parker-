@@ -1,5 +1,3 @@
-
-
 rm(list = ls())
 library(ggplot2)
 library(stats)
@@ -32,9 +30,10 @@ pr <- diff(cpi)
 #Y is defined in the recursive order _---- Please Update Accordingly
 Yraw <- cbind(dsr,dlr,dex,dcrd,pr)
 class(Yraw) <- "numeric"
-Y <- Yraw 
+Y <- scale(Yraw)
 M <- ncol(Yraw)
 L <- nrow(Y)
+
 # Lag Order, Calibrate, etc..
 p = 4
 n = length(Y)
@@ -57,7 +56,6 @@ Y_l <- function(X,lag)
   return(Xlag)
 }
 var_companion_matrix <- function(Beta_,varndxv){
-  #Beta_ <- A_draw
   nn <- varndxv[[1]]
   nd <- varndxv[[2]]
   nl <- varndxv[[3]]
@@ -85,6 +83,9 @@ K <- ncol(X)
 A <- solve(t(X) %*% X) %*% t(X)%*%Y
 nA <- ncol(A)
 SS <- var_companion_matrix(A,varndxv)
+JM <- SS$Jm
+MM <- SS$MM
+
 # Residuals
 E <- Y - X %*% A
 Sigma2 <- t(E)%*%E/(L-p-p*M-1)
@@ -93,10 +94,17 @@ Sigma00[1:M,1:M] <- Sigma2
 # Wrong Order - Upper Triangle Make Lower Triangle Apply Cholesky Factorization
 B0 <- solve(t(chol((Sigma2))))
 
-# Rescale A - Drop Last Row (Beta Coeff for Intercept Dropped)
-V <- A[-c(21),]
-# Impulse Response Function 
-impulsdtrf <- function(L,smat,nstep)
+# Rescale A - Create Phi Array, purpose is to create a matrix for each h horizon 
+# This is too 
+phi_array <- array(0,c(M,M,p))
+for (k in 1:p){
+  phi_array[,,k] <- t(A[((k-1)*M+1):(k*M),])
+}
+
+# Impulse Response Function - error with IRF 
+
+irf <- function(B,smat,nstep)
+
 ### By:             As emerges from rfvar, neqn x nvar x lags array of rf VAR coefficients.
 ### smat:           nshock x nvar matrix of initial shock vectors.  To produce "orthogonalized
 ###                 impulse responses" it should have the property that crossprod(t(smat))=sigma,
@@ -127,7 +135,7 @@ impulsdtrf <- function(L,smat,nstep)
     irhs <- 1:(lags*nvar)
     ilhs <- lags * nvar + (1:nvar)
     response <- matrix(response, ncol=neq)
-    B <- B[, , seq(from=lags, to=1, by=-1)]  #reverse time index to allow matrix mult instead of loop
+    B <- B[, , seq(from=lags, to=1, by=-1)]  #reverse time index to allow matrix multiply instead of loop
     B <- matrix(B,nrow=nvar)
     for (it in 1:(nstep-1)) {
       #browser()
@@ -146,4 +154,16 @@ impulsdtrf <- function(L,smat,nstep)
     ## dimnames(response)[2] <- dimnames(smat)[1]
     ## dimnames(response)[1] <- dimnames(B)[2]
     return(response)
-  }
+}
+
+
+irfresults <- irf(B = phi_array,smat = B0,nstep = h) 
+
+#Extract response for each variable 
+
+
+
+
+
+
+
