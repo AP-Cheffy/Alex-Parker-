@@ -1,3 +1,5 @@
+
+
 rm(list = ls())
 library(ggplot2)
 library(stats)
@@ -6,14 +8,9 @@ library(matrixStats)
 library(compiler)
 library(tseries)
 library(standardize)
+library(arrayhelpers)
 #Import Data
-termstr <- read.csv("/Users/geoffreyaparker/Documents/R&Python&Matlab/R Code/TERM_STRUCTURE.csv",header = TRUE, na.strings = "")
-head(termstr)
-sr <- as.vector(termstr[,"X3MBR"])
-lr <-  as.vector((termstr[,"X10YBR"]))
-ex <-  as.vector((termstr[,"ExCan"]))
-crd <- as.vector(log((termstr[,"CrVL"])))
-cpi <- as.vector((termstr[,"CPI"]))
+
 #Is Stationary?
 adf.test(sr)
 adf.test(lr)
@@ -28,7 +25,7 @@ dcrd <- diff(crd)
 pr <- diff(cpi)
 
 #Y is defined in the recursive order _---- Please Update Accordingly
-Yraw <- cbind(dsr,dlr,dex,dcrd,pr)
+Yraw <- cbind(dsr,dlr,dex)
 class(Yraw) <- "numeric"
 Y <- scale(Yraw)
 M <- ncol(Yraw)
@@ -79,7 +76,7 @@ X <- cbind(Xlag[(p+1):nrow(Xlag),],1)
 
 # For SIGMA
 K <- ncol(X)
-# Estimate VAR by OLS 
+# Estimate VAR by OLS
 A <- solve(t(X) %*% X) %*% t(X)%*%Y
 nA <- ncol(A)
 SS <- var_companion_matrix(A,varndxv)
@@ -88,6 +85,7 @@ MM <- SS$MM
 
 # Residuals
 E <- Y - X %*% A
+MeanE <- mean(E)
 Sigma2 <- t(E)%*%E/(L-p-p*M-1)
 Sigma00 <- matrix(0,nA,nA)
 Sigma00[1:M,1:M] <- Sigma2
@@ -95,15 +93,21 @@ Sigma00[1:M,1:M] <- Sigma2
 B0 <- solve(t(chol((Sigma2))))
 
 # Rescale A - Create Phi Array, purpose is to create a matrix for each h horizon 
-# This is too 
 phi_array <- array(0,c(M,M,p))
 for (k in 1:p){
   phi_array[,,k] <- t(A[((k-1)*M+1):(k*M),])
+  
 }
 
-# Impulse Response Function - error with IRF 
+### % VAR bootstrap Confidence Intervals from Kilian & Lütkepohl (2017), Initial Conditions 
+nrep <- 3500
+irfmat <- array(nrep,(M^2)*(h+1))
+Irfstor <- matrix(nrep,(M^2)*(h+1))
+Ur <- matrix(M*p,L-p)
+Yr <- matrix(M*p,L-p+1)
+# Impulse Response Function 
 
-irf <- function(B,smat,nstep)
+irf <- function(B,smat,nstep){
 
 ### By:             As emerges from rfvar, neqn x nvar x lags array of rf VAR coefficients.
 ### smat:           nshock x nvar matrix of initial shock vectors.  To produce "orthogonalized
@@ -120,7 +124,7 @@ irf <- function(B,smat,nstep)
 ###
 ### Code written by Christopher Sims, based on 6/03 matlab code.  This version 3/27/04.
 ### Added dimension labeling, 8/02/04.
-  {
+  
     ##-----debug--------
     ##browser()
     ##------------------
@@ -155,12 +159,38 @@ irf <- function(B,smat,nstep)
     ## dimnames(response)[1] <- dimnames(B)[2]
     return(response)
 }
+irfresults <- irf(B = phi_array,smat = B0,nstep = h)
+
+# Extract response for each variable - This tedious, for the time being
+# Then add back into new irfstorage case  with horizon for analysis of impulse response 
+#functions 
+horizon <- seq(1:16)
+# Shocks From Variable 1
+one_on_1<- irfresults[1,1,]
+one_on_2 <-irfresults[1,2,]
+one_on_3 <- irfresults[1,3,]
+
+# Shocks From Variable 2
+two_on_1<- irfresults[2,1,]
+two_on_2 <-irfresults[2,2,]
+two_on_3 <- irfresults[2,3,]
+
+# Shocks From Variable 3
+three_on_1<- irfresults[3,1,]
+three_on_2 <-irfresults[3,2,]
+three_on_3 <- irfresults[3,3,]
 
 
-irfresults <- irf(B = phi_array,smat = B0,nstep = h) 
+Shocks_Storage = cbind.data.frame(horizon,one_on_1,one_on_2,one_on_3,two_on_1,two_on_2,two_on_3,
+                                  three_on_1,three_on_2,three_on_3)
 
-#Extract response for each variable 
-
+# Illustration of Shock to 3-Month Rate, 10 Year Rate 
+ggplot(data=Shocks_Storage, aes(x=horizon, y=one_on_1)) + 
+  geom_line(colour="red", size=1.5) + 
+  geom_point(colour="red") +  labs( 
+                                   y="Percentage", 
+                                   x="Horizon", 
+                                   title="Monetary Policy Shock")
 
 
 
