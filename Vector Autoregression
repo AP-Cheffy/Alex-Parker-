@@ -1,5 +1,3 @@
-
-
 rm(list = ls())
 library(ggplot2)
 library(stats)
@@ -9,25 +7,15 @@ library(compiler)
 library(tseries)
 library(standardize)
 library(arrayhelpers)
+library(matrixcalc)
 #Import Data
-
-#Is Stationary?
-adf.test(sr)
-adf.test(lr)
-adf.test(ex)
-adf.test(crd)
-adf.test(cpi)
-# Taking First Differenece (REMOVE ANY CHANCE OF COINTEGRATION)
-dsr <- diff(sr)
-dlr <- diff(lr)
-dex <- diff(ex)
-dcrd <- diff(crd)
-pr <- diff(cpi)
 
 #Y is defined in the recursive order _---- Please Update Accordingly
 Yraw <- cbind(dsr,dlr,dex)
 class(Yraw) <- "numeric"
 Y <- scale(Yraw)
+#########################
+########################
 M <- ncol(Yraw)
 L <- nrow(Y)
 
@@ -39,7 +27,7 @@ h = 16 # IRF Horizon
 varndxv <- c(M,1,p) # For State Space Structure 
 
 # Create Lag Matrix Function For Y_t-1, Y_t-2...... 
-# Y is [T x M]. ylag is [T x (Mp)]
+# Y is [T x M]. xlag is [T x (Mp)]
 Y_l <- function(X,lag)
 {
   p <- lag
@@ -73,38 +61,47 @@ var_companion_matrix <- function(Beta_,varndxv){
 Xlag <- Y_l(Y,p)
 Y <- Y[(p+1):nrow(Y),,drop=FALSE]
 X <- cbind(Xlag[(p+1):nrow(Xlag),],1)
-
+ 
 # For SIGMA
 K <- ncol(X)
+O <- nrow(Y)
+FL <- nrow(X)
 # Estimate VAR by OLS
-A <- solve(t(X) %*% X) %*% t(X)%*%Y
-nA <- ncol(A)
+OLSReg <- function(X,Y){
+  A <- solve(t(X) %*% X) %*% t(X)%*%Y
+  nA <- ncol(A)
+  E <- Y - X %*% A
+  MaxE <- max(E)
+  MinE <- min(E)
+  Ehat <- (E - MaxE)/(MaxE - MinE)
+# Normalize Residuals Between 0 or 1   
+  Sigma2 <- t(Ehat)%*%Ehat/(L-p-p*M-1)
+  Sigma00 <- matrix(0,nA,nA)
+  Sigma00[1:M,1:M] <- Sigma2
+  return(list(A=A,ehat=Ehat,Sigma2=Sigma2))
+}
+VAR_Est <- OLSReg(X,Y)
+
+A <- VAR_Est$A 
+ehat <-VAR_Est$ehat
+Z <- nrow(ehat)
+Int <- VAR_Est$V
+mu <- VAR_Est$mean
+Sigma2 <- VAR_Est$Sigma2
+# Wrong Order - Upper Triangle Make Lower Triangle Apply Cholesky Factorization
+B0 <- solve(t(chol((Sigma2))))
+
 SS <- var_companion_matrix(A,varndxv)
 JM <- SS$Jm
 MM <- SS$MM
 
-# Residuals
-E <- Y - X %*% A
-MeanE <- mean(E)
-Sigma2 <- t(E)%*%E/(L-p-p*M-1)
-Sigma00 <- matrix(0,nA,nA)
-Sigma00[1:M,1:M] <- Sigma2
-# Wrong Order - Upper Triangle Make Lower Triangle Apply Cholesky Factorization
-B0 <- solve(t(chol((Sigma2))))
-
-# Rescale A - Create Phi Array, purpose is to create a matrix for each h horizon 
+# Rescale A - Create Phi Array, purpose is to create a matrix for each lag p 
 phi_array <- array(0,c(M,M,p))
 for (k in 1:p){
   phi_array[,,k] <- t(A[((k-1)*M+1):(k*M),])
   
 }
 
-### % VAR bootstrap Confidence Intervals from Kilian & Lütkepohl (2017), Initial Conditions 
-nrep <- 3500
-irfmat <- array(nrep,(M^2)*(h+1))
-Irfstor <- matrix(nrep,(M^2)*(h+1))
-Ur <- matrix(M*p,L-p)
-Yr <- matrix(M*p,L-p+1)
 # Impulse Response Function 
 
 irf <- function(B,smat,nstep){
@@ -161,39 +158,114 @@ irf <- function(B,smat,nstep){
 }
 irfresults <- irf(B = phi_array,smat = B0,nstep = h)
 
-# Extract response for each variable - This tedious, for the time being
-# Then add back into new irfstorage case  with horizon for analysis of impulse response 
-#functions 
-horizon <- seq(1:16)
+####################################################################################
+# - Extract response for each variable - This tedious, for the time being 
+# - Then add back into new irfstorage with horizon sequence for analysis of impulse response functions
+######################################################################################
 # Shocks From Variable 1
 one_on_1<- irfresults[1,1,]
 one_on_2 <-irfresults[1,2,]
 one_on_3 <- irfresults[1,3,]
-
 # Shocks From Variable 2
 two_on_1<- irfresults[2,1,]
 two_on_2 <-irfresults[2,2,]
 two_on_3 <- irfresults[2,3,]
-
 # Shocks From Variable 3
 three_on_1<- irfresults[3,1,]
 three_on_2 <-irfresults[3,2,]
 three_on_3 <- irfresults[3,3,]
 
 
-Shocks_Storage = cbind.data.frame(horizon,one_on_1,one_on_2,one_on_3,two_on_1,two_on_2,two_on_3,
+Shocks_Storage = cbind.data.frame(one_on_1,one_on_2,one_on_3,two_on_1,two_on_2,two_on_3,
                                   three_on_1,three_on_2,three_on_3)
+Shocks_Storage <- as.matrix(Shocks_Storage)
+L_L= ncol(Shocks_Storage)
+### % VAR bootstrap Confidence Intervals similar to Kilian & Lütkepohl (2017)
+# Set Initial Conditions and Storage Matrixes 
+set.seed(12345)
+reps <- 2000
+Yb <- X%*%A
+Irfstor <- matrix(0,reps,(h)*(L_L))
+namessr <- rep(c('one_on_1','one_on_2','one_on_3','two_on_1','two_on_2','two_on_3'
+                 ,'three_on_1','three_on_2','three_on_3'),times=16)
+colnames(Irfstor) <- namessr
+Ur <- matrix(0,M*p,L-p)
 
-# Illustration of Shock to 3-Month Rate, 10 Year Rate 
-ggplot(data=Shocks_Storage, aes(x=horizon, y=one_on_1)) + 
-  geom_line(colour="red", size=1.5) + 
-  geom_point(colour="red") +  labs( 
-                                   y="Percentage", 
-                                   x="Horizon", 
-                                   title="Monetary Policy Shock")
+## Bootstrap Algorithm - see Kilian & Lütkepohl for details 
+bootstrap <- function(Yb,ehat,reps,p,h,Ur,Irfstor){
+for (i in 1:reps){
+    # Resample Errors With Replacement - # Centered Residuals 
+    Ur <- sample(ehat,replace = TRUE)
+    # generate Ybar 
+    IL <- Yb + Ur
+    I <- ncol(IL)
+
+    H <- Y_l(IL,p)
+    Y <- IL[(p+1):nrow(IL),,drop=FALSE]
+    X <- cbind(H[(p+1):nrow(H),],1)
+    
+    # Augment OLS Function for Bootstrap
+    Boot_OLS <- function(X,Y){
+      A <- solve(t(X) %*% X) %*% t(X)%*%Y
+      nA <- ncol(A)
+      E <- Y - X %*% A
+      MeanE <- mean(E)
+      Sigma2 <- t(E)%*%E/(L-p-p*M-1)
+      Sigma00 <- matrix(0,nA,nA)
+      Sigma00[1:I,1:I] <- Sigma2
+      # Wrong Order - Upper Triangle Make Lower Triangle Apply Cholesky Factorization
+      B0 <- solve(t(chol((Sigma2))))
+      
+      return(list(A=A,ehat=E,B0=B0,mean=MeanE,Sigma2=Sigma2))
+    }
+    
+    VAR_Boot <- Boot_OLS(X,Y)
+    A_b <- VAR_Boot$A
+    B0_b <- VAR_Boot$B0
+    
+    phi_array_b <- array(0,c(I,I,p))
+    for (k in 1:p){
+      phi_array_b[,,k] <- t(A_b[((k-1)*M+1):(k*M),])
+      }
+    irfresults_b <- irf(B = phi_array_b,smat = B0_b,nstep = h)
+    
+    # Shocks From Variable 1
+    one_on_1<- irfresults_b[1,1,] 
+    one_on_2 <-irfresults_b[1,2,]
+    one_on_3 <- irfresults_b[1,3,]
+    # Shocks From Variable 2
+    two_on_1<- irfresults_b[2,1,]
+    two_on_2 <-irfresults_b[2,2,]
+    two_on_3 <- irfresults_b[2,3,]
+    # Shocks From Variable 3
+    three_on_1<- irfresults_b[3,1,]
+    three_on_2 <-irfresults_b[3,2,]
+    three_on_3 <- irfresults_b[3,3,]
+    
+      
+    Shocks_Storage_b = cbind.data.frame(one_on_1,one_on_2,one_on_3,two_on_1,two_on_2,two_on_3,
+                                      three_on_1,three_on_2,three_on_3)
+    Shocks_Storage_b <- as.matrix(Shocks_Storage_b)
+    # Store Responses 
+    Irfstor[i,] <- Shocks_Storage_b
+    
+  }
+  return(list(IRF=Irfstor))
+} 
+results <- bootstrap(Yb,ehat,reps,p,h,Ur,Irfstor)
+
+#######
+# - Break Apart# 
+######
+#Error bands <- colQuantiles(,probs = c(0.95,0.05))
+ 
 
 
+## Forecast Error Decomposition - similar to Ambrogio Cesa-Bianchi (2015)
+# - Define Variables 
 
+MSE <- array(0,c(M,M,h))
+MSE_t <- array(0,c(M,M,h))
 
 
 
