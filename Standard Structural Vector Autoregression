@@ -1,0 +1,304 @@
+rm(list = ls())
+library(ggplot2)
+library(stats)
+library(reshape2)
+library(matrixStats)
+library(compiler)
+library(tseries)
+library(standardize)
+library(arrayhelpers)
+library(matrixcalc)
+#Import Data
+termstr <- read.csv("/Users/geoffreyaparker/Documents/R&Python&Matlab/R Code/TERM_STRUCTURE.csv",header = TRUE, na.strings = "")
+head(termstr)
+sr <- as.vector(termstr[,"X3MBR"])
+lr <-  as.vector((termstr[,"X10YBR"]))
+ex <-  as.vector((termstr[,"ExCan"]))
+crd <- as.vector(log((termstr[,"CrVL"])))
+cpi <- as.vector((termstr[,"CPI"]))
+#Is Stationary?
+adf.test(sr)
+adf.test(lr)
+adf.test(ex)
+adf.test(crd)
+adf.test(cpi)
+
+dsr <- diff(sr)
+dlr <- diff(lr)
+dex <- diff(ex)
+dcrd <- diff(crd)
+pr <- diff(cpi)
+
+#Y is defined in the recursive order _---- Please Update Accordingly
+Yraw <- cbind(dsr,dlr,dex)
+class(Yraw) <- "numeric"
+Y <- scale(Yraw)
+Yx <- Y
+#########################
+########################
+M <- ncol(Yraw)
+L <- nrow(Y)
+
+# Lag Order, Calibrate, etc..
+p = 4
+n = length(Y)
+h = 16 # IRF Horizon
+
+varndxv <- c(M,1,p) # For State Space Structure 
+
+# Create Lag Matrix Function For Y_t-1, Y_t-2...... 
+# Y is [T x M]. xlag is [T x (Mp)]
+Y_l <- function(X,lag){
+    p <- lag
+    X <- as.matrix(X)
+    Q <- nrow(X)
+    N <- ncol(X)
+    Xlag <- matrix(0,Q,p*N)
+    for (ii in 1:p){
+        Xlag[(p+1):Q,(N*(ii-1)+1):(N*ii)]=X[(p+1-ii):(Q-ii),(1:N)]
+    }
+    return(Xlag)
+}
+var_companion_matrix <- function(Beta_,varndxv){
+    nn <- varndxv[[1]]
+    nd <- varndxv[[2]]
+    nl <- varndxv[[3]]
+    
+    nkk <- nn*nl+nd
+    
+    Jm <- matrix(0,nkk,nn)
+    Jm[1:nn,1:nn] <- diag(nn)
+    if (nd==1){
+        MM <- rbind(t(Beta_),cbind(diag((nl-1)*nn), matrix(0,(nl-1)*nn,nn+1)),c(matrix(0,1,nn*nl),1))
+    }else{
+        MM <- rbind(t(Beta_),cbind(diag((nl-1)*nn), matrix(0,(nl-1)*nn,nn)))
+    }
+    return(list(MM=MM,Jm=Jm))
+} 
+
+# Apply Function for Y_L, Y is 
+Xlag <- Y_l(Y,p)
+Y <- Y[(p+1):nrow(Y),,drop=FALSE]
+X <- cbind(Xlag[(p+1):nrow(Xlag),],1)
+
+# For SIGMA
+K <- ncol(X)
+O <- nrow(Y)
+FL <- nrow(X)
+# Estimate VAR by OLS
+OLSReg <- function(X,Y){
+    A <- solve(t(X) %*% X) %*% t(X)%*%Y
+    nA <- ncol(A)
+    E <- Y - X %*% A
+    MaxE <- max(E)
+    MinE <- min(E)
+    Ehat <- (E - MaxE)/(MaxE - MinE)
+    # Normalize Residuals Between 0 or 1   
+    Sigma2 <- t(Ehat)%*%Ehat/(L-p-p*M-1)
+    Sigma00 <- matrix(0,nA,nA)
+    Sigma00[1:M,1:M] <- Sigma2
+    return(list(A=A,E=E,ehat=Ehat,Sigma2=Sigma2))
+}
+VAR_Est <- OLSReg(X,Y)
+
+A <- VAR_Est$A 
+ehat <-VAR_Est$ehat
+E <- VAR_Est$E
+Z <- nrow(ehat)
+Int <- VAR_Est$V
+mu <- VAR_Est$mean
+Sigma2 <- VAR_Est$Sigma2
+# Wrong Order - Upper Triangle Make Lower Triangle Apply Cholesky Factorization
+B0 <- solve(t(chol((Sigma2))))
+
+SS <- var_companion_matrix(A,varndxv)
+JM <- SS$Jm
+MM <- SS$MM
+
+# Rescale A - Create Phi Array, purpose is to create a matrix for each lag p 
+phi_array <- array(0,c(M,M,p))
+for (k in 1:p){
+    phi_array[,,k] <- t(A[((k-1)*M+1):(k*M),])
+    
+}
+
+# Impulse Response Function 
+
+irf <- function(B,smat,nstep){
+    
+    ### By:             As emerges from rfvar, neqn x nvar x lags array of rf VAR coefficients.
+    ### smat:           nshock x nvar matrix of initial shock vectors.  To produce "orthogonalized
+    ###                 impulse responses" it should have the property that crossprod(t(smat))=sigma,
+    ###                 where sigma is the Var(u(t)) matrix and u(t) is the rf residual vector.  One
+    ###                 way to get such a smat is to set smat=t(chol(sigma)).  To get the smat
+    ###                 corresponding to a different ordering, use
+    ###                 smat = t(chol(P %*% Sigma %*% t(P)) %*% P), where P is a permutation matrix.
+    ###                 To get impulse responses for a structural VAR in the form A(L)y=eps, with
+    ###                 Var(eps)=I, use B(L)=-A_0^(-1)A_+(L) (where A_+ is the coefficients on strictly
+    ###                 positive powers of L in A), smat=A_0^(-1).
+    ###                 In general, though, it is not required that smat be invertible.
+    ### response:       nvar x nshocks x nstep array of impulse responses.
+    ###
+    ### Code written by Christopher Sims, based on 6/03 matlab code.  This version 3/27/04.
+    ### Added dimension labeling, 8/02/04.
+    
+    ##-----debug--------
+    ##browser()
+    ##------------------
+    neq <- dim(B)[1]
+    nvar <- dim(B)[2]
+    lags <- dim(B)[3]
+    dimnB <- dimnames(B)
+    if(dim(smat)[2] != dim(B)[2]) stop("B and smat conflict on # of variables")
+    response <- array(0,dim=c(neq,nvar,nstep+lags-1));
+    response[ , , lags] <- smat
+    response <- aperm(response, c(1,3,2))
+    irhs <- 1:(lags*nvar)
+    ilhs <- lags * nvar + (1:nvar)
+    response <- matrix(response, ncol=neq)
+    B <- B[, , seq(from=lags, to=1, by=-1)]  #reverse time index to allow matrix multiply instead of loop
+    B <- matrix(B,nrow=nvar)
+    for (it in 1:(nstep-1)) {
+        #browser()
+        response[ilhs, ] <- B %*% response[irhs, ]
+        irhs <- irhs + nvar
+        ilhs <- ilhs + nvar
+    }
+    ## for (it in 2:nstep)
+    ##       {
+    ##         for (ilag in 1:min(lags,it-1))
+    ##           response[,,it] <- response[,,it]+B[,,ilag] %*% response[,,it-ilag]
+    ##       }
+    dim(response) <- c(nvar, nstep + lags - 1, nvar)
+    response <- aperm(response[ , -(1:(lags-1)), ], c(1, 3, 2)) #drop the zero initial conditions; array in usual format
+    dimnames(response) <- list(dimnB[[1]], dimnames(smat)[[2]], NULL)
+    ## dimnames(response)[2] <- dimnames(smat)[1]
+    ## dimnames(response)[1] <- dimnames(B)[2]
+    return(response)
+}
+irfresults <- irf(B = phi_array,smat = B0,nstep = h)
+
+####################################################################################
+# - Extract response for each variable - This tedious, for the time being 
+# - Then add back into new irfstorage with horizon sequence for analysis of impulse response functions
+######################################################################################
+# Shocks From Variable 1
+one_on_1<- irfresults[1,1,]
+one_on_2 <-irfresults[1,2,]
+one_on_3 <- irfresults[1,3,]
+# Shocks From Variable 2
+two_on_1<- irfresults[2,1,]
+two_on_2 <-irfresults[2,2,]
+two_on_3 <- irfresults[2,3,]
+# Shocks From Variable 3
+three_on_1<- irfresults[3,1,]
+three_on_2 <-irfresults[3,2,]
+three_on_3 <- irfresults[3,3,]
+
+
+Shocks_Storage = cbind.data.frame(one_on_1,one_on_2,one_on_3,two_on_1,two_on_2,two_on_3,
+                                  three_on_1,three_on_2,three_on_3)
+Shocks_Storage <- as.matrix(Shocks_Storage)
+L_L= ncol(Shocks_Storage)
+
+
+### % VAR bootstrap Confidence Intervals, Kilian & Lütkepohl (2017)
+# Set Initial Conditions and Storage Matrices 
+set.seed(12345)
+reps <- 2000
+Irfstor <- matrix(0,reps,(h)*(L_L))
+namessr <- rep(c('one_on_1','one_on_2','one_on_3','two_on_1','two_on_2','two_on_3'
+                 ,'three_on_1','three_on_2','three_on_3'),times=16)
+colnames(Irfstor) <- namessr
+## Bootstrap Algorithm - see Kilian & Lütkepohl(2017) for details 
+bootstrap <- function(Y,E,reps,p,h,Irfstor){
+    for (i in 1:reps){
+        if(i %% 500 == 0){
+            
+            cat("draw no.",i,"\n")}
+        # Resample Errors With Replacement
+        Ur <- E[sample.int(nrow(E)),]
+        # generate Ybar 
+        Y_b = Yx + Ur
+        
+        Xlag <- Y_l(Y_b,p)
+        Y <- Y_b[(p+1):nrow(Y_b),,drop=FALSE]
+        X <- cbind(Xlag[(p+1):nrow(Xlag),],1)
+        
+        OLSReg <- function(X,Y){
+            A <- solve(t(X) %*% X) %*% t(X)%*%Y
+            nA <- ncol(A)
+            E <- Y - X %*% A
+            MaxE <- max(E)
+            MinE <- min(E)
+            Ehat <- (E - MaxE)/(MaxE - MinE)
+            # Normalize Residuals Between 0 or 1   
+            Sigma2 <- t(Ehat)%*%Ehat/(L-p-p*M-1)
+            Sigma00 <- matrix(0,nA,nA)
+            Sigma00[1:M,1:M] <- Sigma2
+            return(list(A=A,E=E,ehat=Ehat,Sigma2=Sigma2))
+        }
+        VAR_Est_b <- OLSReg(X,Y)
+        A_b <- VAR_Est_b$A
+        Sigma2_b <- VAR_Est_b$Sigma2
+        B0 <- solve(t(chol((Sigma2_b))))
+        
+        
+        phi_array_b <- array(0,c(M,M,p))
+        for (k in 1:p){
+            phi_array_b[,,k] <- t(A_b[((k-1)*M+1):(k*M),])
+        }
+        irfresults_b <- irf(B = phi_array_b,smat = B0,nstep = h)
+        
+        # Shocks From Variable 1
+        one_on_1<- irfresults_b[1,1,] 
+        one_on_2 <-irfresults_b[1,2,]
+        one_on_3 <- irfresults_b[1,3,]
+        # Shocks From Variable 2
+        two_on_1<- irfresults_b[2,1,]
+        two_on_2 <-irfresults_b[2,2,]
+        two_on_3 <- irfresults_b[2,3,]
+        # Shocks From Variable 3
+        three_on_1<- irfresults_b[3,1,]
+        three_on_2 <-irfresults_b[3,2,]
+        three_on_3 <- irfresults_b[3,3,]
+        
+        
+        Shocks_Storage_b = cbind.data.frame(one_on_1,one_on_2,one_on_3,two_on_1,two_on_2,two_on_3,
+                                            three_on_1,three_on_2,three_on_3)
+        Shocks_Storage_b <- as.matrix(Shocks_Storage_b)
+        # Store Responses 
+        Irfstor[i,] <- vec(Shocks_Storage_b)
+        
+    }
+    return(list(IRF=Irfstor))
+} 
+results <- bootstrap(Yx,E,reps,p,h,Irfstor)
+### Plotting Time ####
+### Extract Reps for Each Shock and Insert to a Matrix
+res <- data.frame(results$IRF)
+res_m <- matrix(0,h*reps,L_L)
+colnames(res_m) <- c("1.1","1.2","1.3","2.1","2.2","2.3","3.1","3.2","3.3")
+Extract_Order_Reps <- function(res_m,res){
+    res_m[,1] <- vec(as.matrix(res[, grepl("^one_on_1", names(res))]))
+    res_m[,2] <- vec(as.matrix(res[, grepl("^one_on_2", names(res))]))
+    res_m[,3] <- vec(as.matrix(res[, grepl("^one_on_3", names(res))]))
+    res_m[,4] <- vec(as.matrix(res[, grepl("^two_on_1", names(res))]))
+    res_m[,5] <- vec(as.matrix(res[, grepl("^two_on_2", names(res))]))
+    res_m[,6] <- vec(as.matrix(res[, grepl("^two_on_3", names(res))]))
+    res_m[,7] <- vec(as.matrix(res[, grepl("^three_on_1", names(res))]))
+    res_m[,8] <- vec(as.matrix(res[, grepl("^three_on_2", names(res))]))
+    res_m[,9] <- vec(as.matrix(res[, grepl("^three_on_3", names(res))]))
+    return(res_m = res_m)
+}
+
+
+error_bands <- apply(res_m,2,quantile,c(0.05,0.95))
+
+Y_temp = cbind(vec(Shocks_Storage),vec(Shocks_Storage))
+horizon = seq(1,16)
+error_bands_1.1 <- rbind(one_on_1,error_bands[,1])
+imp.resp_1.1 <- cbind(horizon,error_bands_1.1[1,],one_on_1,error_bands_1.1[2,])
+names(imp.resp_1.1) <- c('horizon','lower','one_on_1','upper')
+
+
