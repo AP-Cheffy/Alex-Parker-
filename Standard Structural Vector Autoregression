@@ -206,38 +206,27 @@ L_L= ncol(Shocks_Storage)
 # Set Initial Conditions and Storage Matrices 
 set.seed(12345)
 reps <- 2000
+Psi_i <- X %*% A
 Irfstor <- matrix(0,reps,(h)*(L_L))
 namessr <- rep(c('one_on_1','one_on_2','one_on_3','two_on_1','two_on_2','two_on_3'
                  ,'three_on_1','three_on_2','three_on_3'),times=16)
 colnames(Irfstor) <- namessr
 ## Bootstrap Algorithm - see Kilian & Lütkepohl(2017) for details 
-bootstrap <- function(Y,E,reps,p,h,Irfstor){
+bootstrap <- function(Y,E,Psi_i,reps,p,h,Irfstor){
     for (i in 1:reps){
         if(i %% 500 == 0){
             
             cat("draw no.",i,"\n")}
-        # Resample Errors With Replacement
+        # Resample Errors With Replacement - # Centered Residuals 
         Ur <- E[sample.int(nrow(E)),]
-        # generate Ybar 
-        Y_b = Yx + Ur
+        # generate Y
+        Y <- Psi_i + Ur    
         
-        Xlag <- Y_l(Y_b,p)
-        Y <- Y_b[(p+1):nrow(Y_b),,drop=FALSE]
+        Xlag <- Y_l(Y,p)
+        Y <- Y[(p+1):nrow(Y),,drop=FALSE] 
         X <- cbind(Xlag[(p+1):nrow(Xlag),],1)
         
-        OLSReg <- function(X,Y){
-            A <- solve(t(X) %*% X) %*% t(X)%*%Y
-            nA <- ncol(A)
-            E <- Y - X %*% A
-            MaxE <- max(E)
-            MinE <- min(E)
-            Ehat <- (E - MaxE)/(MaxE - MinE)
-            # Normalize Residuals Between 0 or 1   
-            Sigma2 <- t(Ehat)%*%Ehat/(L-p-p*M-1)
-            Sigma00 <- matrix(0,nA,nA)
-            Sigma00[1:M,1:M] <- Sigma2
-            return(list(A=A,E=E,ehat=Ehat,Sigma2=Sigma2))
-        }
+        # OLS Function for Bootstrap
         VAR_Est_b <- OLSReg(X,Y)
         A_b <- VAR_Est_b$A
         Sigma2_b <- VAR_Est_b$Sigma2
@@ -272,33 +261,52 @@ bootstrap <- function(Y,E,reps,p,h,Irfstor){
         
     }
     return(list(IRF=Irfstor))
-} 
-results <- bootstrap(Yx,E,reps,p,h,Irfstor)
+}
+results <- bootstrap(Yx,E,Psi_i,reps,p,h,Irfstor)
 ### Plotting Time ####
 ### Extract Reps for Each Shock and Insert to a Matrix
 res <- data.frame(results$IRF)
-res_m <- matrix(0,h*reps,L_L)
-colnames(res_m) <- c("1.1","1.2","1.3","2.1","2.2","2.3","3.1","3.2","3.3")
-Extract_Order_Reps <- function(res_m,res){
-    res_m[,1] <- vec(as.matrix(res[, grepl("^one_on_1", names(res))]))
-    res_m[,2] <- vec(as.matrix(res[, grepl("^one_on_2", names(res))]))
-    res_m[,3] <- vec(as.matrix(res[, grepl("^one_on_3", names(res))]))
-    res_m[,4] <- vec(as.matrix(res[, grepl("^two_on_1", names(res))]))
-    res_m[,5] <- vec(as.matrix(res[, grepl("^two_on_2", names(res))]))
-    res_m[,6] <- vec(as.matrix(res[, grepl("^two_on_3", names(res))]))
-    res_m[,7] <- vec(as.matrix(res[, grepl("^three_on_1", names(res))]))
-    res_m[,8] <- vec(as.matrix(res[, grepl("^three_on_2", names(res))]))
-    res_m[,9] <- vec(as.matrix(res[, grepl("^three_on_3", names(res))]))
-    return(res_m = res_m)
+
+Median_B <- round(apply(res,2,mean),4)
+Lower_B <- round(apply(res,2,quantile,0.05),4)
+Upper_B <- round(apply(res,2,quantile,0.95),4)
+
+
+res_m_m <- matrix(0,h,L_L)
+colnames(res_m_m) <- c("1.1","1.2","1.3","2.1","2.2","2.3","3.1","3.2","3.3")
+res_m_u <- matrix(0,h,L_L)
+colnames(res_m_u) <- c("1.1","1.2","1.3","2.1","2.2","2.3","3.1","3.2","3.3")
+res_m_l <- matrix(0,h,L_L)
+colnames(res_m_l) <- c("1.1","1.2","1.3","2.1","2.2","2.3","3.1","3.2","3.3")
+
+for (i in 1:ncol(res_m_m)){
+    res_m_m[,i] <- Median_B[seq(i,length(Median_B),9)]
+}
+for (i in 1:ncol(res_m_l)){
+    res_m_l[,i] <- Lower_B[seq(i,length(Lower_B),9)]
+}
+
+for (i in 1:ncol(res_m_u)){
+    res_m_u[,i] <- Upper_B[seq(i,length(Upper_B),9)]
 }
 
 
-error_bands <- apply(res_m,2,quantile,c(0.05,0.95))
+## Example Plot Impulse Response Function 
 
-Y_temp = cbind(vec(Shocks_Storage),vec(Shocks_Storage))
-horizon = seq(1,16)
-error_bands_1.1 <- rbind(one_on_1,error_bands[,1])
-imp.resp_1.1 <- cbind(horizon,error_bands_1.1[1,],one_on_1,error_bands_1.1[2,])
-names(imp.resp_1.1) <- c('horizon','lower','one_on_1','upper')
+horizon <- seq(1,16)
+
+plot(horizon,res_m_m[,1],type = "l", col="red", lty=1, ylim=c(-3,3))
+points(horizon, res_m_u[,1], type = "l",col="black")
+lines(horizon, res_m_u[,1], col="black",lty=2)
+points(horizon, res_m_l[,1], type = "l",col="black")
+lines(horizon, res_m_l[,1], col="black",lty=3)
+
+
+plot(horizon,res_m_m[,2],type = "l", col="red", lty=1, ylim=c(-3,5))
+points(horizon, res_m_u[,2], type = "l",col="black")
+lines(horizon, res_m_u[,2], col="black",lty=2)
+points(horizon, res_m_l[,2], type = "l",col="black")
+lines(horizon, res_m_l[,2], col="black",lty=3)
+
 
 
