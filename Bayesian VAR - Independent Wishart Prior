@@ -1,0 +1,243 @@
+rm(list = ls())
+library(ggplot2)
+library(stats)
+library(reshape2)
+library(matrixStats)
+library(compiler)
+library(CholWishart)
+library(tseries)
+library(LaplacesDemon)
+library(standardize)
+library(arrayhelpers)
+library(matrixcalc)
+library(Matrix)
+#Import Data
+termstr <- read.csv("/Users/geoffreyaparker/Documents/R&Python&Matlab/R Code/TERM_STRUCTURE.csv",header = TRUE, na.strings = "")
+head(termstr)
+sr <- as.vector(termstr[,"X3MBR"])
+lr <-  as.vector(termstr[,"X10YBR"])
+ex <- as.vector(termstr[,"ExCan"])
+#Is Stationary?
+adf.test(sr)
+adf.test(lr)
+adf.test(ex)
+# Taking First Differenece
+dex <- diff(ex)
+dlr <- diff(lr)
+sr <- sr[2:length(sr)]
+#Y is defined in the recursive order _---- Please Update Accordingly
+Y <- cbind(dex,dlr,sr)
+class(Y) <- "numeric"
+######################### Model begins here ########################## 
+######### See Koop and Korobilis (2009) and code for details - https://sites.google.com/site/garykoop/home/computer-code-2?authuser=0
+
+# Get initial dimensions for dependent variables
+M <- ncol(Y)
+Traw <- nrow(Y)
+
+# Lag Order, Calibrate, etc..
+p = 4
+h = 16 # IRF Horizon
+irt = 10000
+nburn = 2000
+ntot = irt + nburn
+nthin = 1
+varndxv <- c(M,1,p) # For State Space Structure 
+
+
+
+# Create Lag Matrix Function For Y_t-1, Y_t-2...... 
+# Y is [T x M]. xlag is [T x (Mp)]
+Y_l <- function(X,lag){
+  p <- lag
+  X <- as.matrix(X)
+  Q <- nrow(X)
+  N <- ncol(X)
+  Xlag <- matrix(0,Q,p*N)
+  for (ii in 1:p){
+    Xlag[(p+1):Q,(N*(ii-1)+1):(N*ii)]=X[(p+1-ii):(Q-ii),(1:N)]
+  }
+  return(Xlag)
+}
+# Apply Function for Y_L, Y is 
+Xlag <- Y_l(Y,p)
+Y <- Y[(p+1):nrow(Y),,drop=FALSE]
+X <- cbind(Xlag[(p+1):nrow(Xlag),],1)
+
+# For SIGMA^2
+K <- ncol(X)
+# Create Z Matrix 
+Zn <- diag(M) %x% X
+# Traw was the dimesnion of the initial data. T is the number of actual 
+# time series observations of Y and X (we lose the p-lags)
+
+TT <- Traw - p
+
+#OLS ESTIMATES
+A <- solve(t(X)%*%X)%*%t(X)%*%Y
+a <- vec(A)
+SSE <- t(Y-X%*%A)%*%(Y-X%*%A)
+Sigma2 <- SSE/(TT-K+1)
+n <- K*M
+#Initial Condition
+alpha <- a
+ALPHA <- A
+SSE_Gibbs <- SSE
+Sigma_2 <- solve(Sigma2)
+Sdim <- dim(Sigma_2)[[1]] * dim(Sigma_2)[[2]]
+######
+phi_array <- array(0,c(M,M,p))
+######
+irf <- function(B,smat,nstep){
+    
+    ### By:             As emerges from rfvar, neqn x nvar x lags array of rf VAR coefficients.
+    ### smat:           nshock x nvar matrix of initial shock vectors.  To produce "orthogonalized
+    ###                 impulse responses" it should have the property that crossprod(t(smat))=sigma,
+    ###                 where sigma is the Var(u(t)) matrix and u(t) is the rf residual vector.  One
+    ###                 way to get such a smat is to set smat=t(chol(sigma)).  To get the smat
+    ###                 corresponding to a different ordering, use
+    ###                 smat = t(chol(P %*% Sigma %*% t(P)) %*% P), where P is a permutation matrix.
+    ###                 To get impulse responses for a structural VAR in the form A(L)y=eps, with
+    ###                 Var(eps)=I, use B(L)=-A_0^(-1)A_+(L) (where A_+ is the coefficients on strictly
+    ###                 positive powers of L in A), smat=A_0^(-1).
+    ###                 In general, though, it is not required that smat be invertible.
+    ### response:       nvar x nshocks x nstep array of impulse responses.
+    ###
+    ### Code written by Christopher Sims, based on 6/03 matlab code.  This version 3/27/04.
+    ### Added dimension labeling, 8/02/04.
+    
+    ##-----debug--------
+    ##browser()
+    ##------------------ 
+    neq <- dim(B)[1]
+    nvar <- dim(B)[2]
+    lags <- dim(B)[3]
+    dimnB <- dimnames(B)
+    if(dim(smat)[2] != dim(B)[2]) stop("B and smat conflict on # of variables")
+    response <- array(0,dim=c(neq,nvar,nstep+lags-1));
+    response[ , , lags] <- smat
+    response <- aperm(response, c(1,3,2))
+    irhs <- 1:(lags*nvar)
+    ilhs <- lags * nvar + (1:nvar)
+    response <- matrix(response, ncol=neq)
+    B <- B[, , seq(from=lags, to=1, by=-1)]  #reverse time index to allow matrix multiply instead of loop
+    B <- matrix(B,nrow=nvar)
+    for (it in 1:(nstep-1)) {
+        #browser()
+        response[ilhs, ] <- B %*% response[irhs, ]
+        irhs <- irhs + nvar
+        ilhs <- ilhs + nvar
+    }
+    ## for (it in 2:nstep)
+    ##       {
+    ##         for (ilag in 1:min(lags,it-1))
+    ##           response[,,it] <- response[,,it]+B[,,ilag] %*% response[,,it-ilag]
+    ##       }
+    dim(response) <- c(nvar, nstep + lags - 1, nvar)
+    response <- aperm(response[ , -(1:(lags-1)), ], c(1, 3, 2)) #drop the zero initial conditions; array in usual format
+    dimnames(response) <- list(dimnB[[1]], dimnames(smat)[[2]], NULL)
+    ## dimnames(response)[2] <- dimnames(smat)[1]
+    ## dimnames(response)[1] <- dimnames(B)[2]
+    return(response)
+}
+set.seed(12345)
+# Hyperparameters for Mean 
+a_prior <- 0*matrix(0,n,1)  #### <------  prior mean of alpha (parameter vector)
+V_prior <- 10*diag(1,n)     #### <---- prior variance of alpha
+
+
+# Hyperparameters for S^-1 
+v_prior <- M
+S_prior <- diag(1,M)
+inv_S_prior <- solve(S_prior)
+
+######
+##Wishart Distribution Based on Bartlett Decomposition -- NEED TO WORK ON THIS.....
+wish <- function(h,n){
+    m <- length(n)
+    z <- nrow(h)
+    x <- t(chol(h)) %*% matrix(rnorm(m*z,0,1),z,m)
+    x <- x%*%t(x)
+    return(x)
+}
+
+irfstor <- matrix(0, nrow = ntot, ncol = Sdim*h)
+
+
+#### Start Gibbs Sampling ####
+
+Gibbs_Sampling <- function(Sigma_2,Zn,V_prior,a_prior,inv_S_prior,irfstor){
+for (i in 1:ntot){
+  if(i %% 1000 == 0){
+  
+  cat("draw no.",i,"\n")}
+  
+    ## Posterior for Alpha
+    ## Make epsilon block digonal like Z 
+  invG <- Sigma_2 %x% diag(TT)
+  V_post <- solve(solve(V_prior)+ t(Zn) %*% invG %*% Zn)
+  a_post <- V_post %*% (solve(V_prior) %*% a_prior + (t(Zn) %*% invG ) %*% vec(Y))
+  ## Draw from alpha --> (a) ## This needed to compute the "ALPHA"
+  alpha <- a_post + t(chol(V_post))%*% rnorm(n,1)
+  
+  # Draw from ALPHA --> (A)
+  A <- matrix(alpha,K,M)
+  ## Posterior for Sigma (Inverse-Wishart Distribution) 
+  v_post <- TT + v_prior
+  S_post <- S_prior + t(Y-X%*%A) %*%(Y-X%*%A)
+  Sigma <- solve(rWishart(1,v_post,solve(S_post))[,,1])
+  B0 <- t(chol(Sigma))
+  
+  for (k in 1:p){
+       phi_array[,,k] <- t(A[((k-1)*M+1):(k*M),])
+   }
+  irfresults <- irf(B = phi_array, smat = B0, nstep = h)
+  HorMat <- matrix(0,Sdim,h)
+  for (m in 1:h){
+       HorMat[,m] <- irfresults[,,m]}           
+    
+    irfstor[i,] <- vec(HorMat)
+    } 
+  return(list(IRF=irfstor,Apost=a_post,Vpost=V_post,vpost=v_post,VSigpost=S_post))
+}
+###### Numerical Execution and Timing ######
+ptm <- proc.time()
+Results <- Gibbs_Sampling(Sigma_2,Zn,V_prior,a_prior,inv_S_prior,irfstor)
+proc.time() - ptm    
+
+irfre <- Results[[1]][(nburn+1):ntot,]
+
+Median_B <- apply(irfre,2,median)
+Lower_B <- apply(irfre,2,quantile,0.05)
+Upper_B <- apply(irfre,2,quantile,0.95)
+
+
+res_m_m <- matrix(0,h,Sdim)
+colnames(res_m_m) <- c("1.1","1.2","1.3","2.1","2.2","2.3","3.1","3.2","3.3")
+res_m_u <- matrix(0,h,Sdim)
+colnames(res_m_u) <- c("1.1","1.2","1.3","2.1","2.2","2.3","3.1","3.2","3.3")
+res_m_l <- matrix(0,h,Sdim)
+colnames(res_m_l) <- c("1.1","1.2","1.3","2.1","2.2","2.3","3.1","3.2","3.3")
+
+
+for (i in 1:ncol(res_m_m)){
+    res_m_m[,i] <- Median_B[seq(i,length(Median_B),Sdim)]
+}  
+ 
+for (i in 1:ncol(res_m_l)){
+    res_m_l[,i] <- Lower_B[seq(i,length(Lower_B),Sdim)]
+}
+
+for (i in 1:ncol(res_m_u)){
+    res_m_u[,i] <- Upper_B[seq(i,length(Upper_B),Sdim)]
+}  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+
