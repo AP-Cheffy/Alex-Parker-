@@ -9,38 +9,26 @@ library(standardize)
 library(arrayhelpers)
 library(matrixcalc)
 #Import Data
-termstr <- read.csv("/Users/geoffreyaparker/Documents/R&Python&Matlab/R Code/TERM_STRUCTURE.csv",header = TRUE, na.strings = "")
-head(termstr)
-sr <- as.vector(termstr[,"X3MBR"])
-lr <-  as.vector((termstr[,"X10YBR"]))
-ex <-  as.vector((termstr[,"ExCan"]))
-crd <- as.vector(log((termstr[,"CrVL"])))
-cpi <- as.vector((termstr[,"CPI"]))
-#Is Stationary?
-adf.test(sr)
-adf.test(lr)
-adf.test(ex)
-adf.test(crd)
-adf.test(cpi)
+termstr <- read.csv("/Users/geoffreyaparker/Documents/R&Python&Matlab/R Code/IN PROGRESS/VAR/Book1.csv",header = TRUE, na.strings = "")
+data.frame(termstr)
+termstr <- termstr[142:220,]
+i_t <- as.numeric(termstr[,"X3MonthRate"] - termstr[,"FedFund"])
+m_t <- as.numeric(termstr[,"GDP"])
+h_t <- as.numeric(termstr[,"Def"])
+y_t <- diff(log(m_t) -log(h_t))
+u_t <- diff(as.numeric(termstr[,"Unemployment"]))
+e_x <- diff(termstr[,"C.U"])
 
-dsr <- diff(sr)
-dlr <- diff(lr)
-dex <- diff(ex)
-dcrd <- diff(crd)
-pr <- diff(cpi)
+#Y is defined in the recursive order ----> Update Accordingly
+Y <- cbind(e_x,y_t,u_t,i_t)
 
-#Y is defined in the recursive order _---- Please Update Accordingly
-Yraw <- cbind(dsr,dlr,dex)
-class(Yraw) <- "numeric"
-Y <- scale(Yraw)
-Yx <- Y
 #########################
 ########################
-M <- ncol(Yraw)
+M <- ncol(Y)
 L <- nrow(Y)
 
 # Lag Order, Calibrate, etc..
-p = 4
+p = 2
 n = length(Y)
 h = 16 # IRF Horizon
 
@@ -90,26 +78,19 @@ OLSReg <- function(X,Y){
     A <- solve(t(X) %*% X) %*% t(X)%*%Y
     nA <- ncol(A)
     E <- Y - X %*% A
-    MaxE <- max(E)
-    MinE <- min(E)
-    Ehat <- (E - MaxE)/(MaxE - MinE)
-    # Normalize Residuals Between 0 or 1   
-    Sigma2 <- t(Ehat)%*%Ehat/(L-p-p*M-1)
+    e_r <- E
+    Sigma2 <- t(e_r)%*%e_r/(L-p-p*M-1)
     Sigma00 <- matrix(0,nA,nA)
     Sigma00[1:M,1:M] <- Sigma2
-    return(list(A=A,E=E,ehat=Ehat,Sigma2=Sigma2))
+    return(list(A=A,e_r=e_r,Sigma2=Sigma2))
 }
 VAR_Est <- OLSReg(X,Y)
 
 A <- VAR_Est$A 
-ehat <-VAR_Est$ehat
-E <- VAR_Est$E
-Z <- nrow(ehat)
-Int <- VAR_Est$V
-mu <- VAR_Est$mean
+E <- VAR_Est$e_r
 Sigma2 <- VAR_Est$Sigma2
-# Wrong Order - Upper Triangle Make Lower Triangle Apply Cholesky Factorization
-B0 <- solve(t(chol((Sigma2))))
+# Use Triangular Factorization
+B0 <- t(chol(Sigma2))
 
 SS <- var_companion_matrix(A,varndxv)
 JM <- SS$Jm
@@ -144,7 +125,7 @@ irf <- function(B,smat,nstep){
     
     ##-----debug--------
     ##browser()
-    ##------------------
+    ##------------------ 
     neq <- dim(B)[1]
     nvar <- dim(B)[2]
     lags <- dim(B)[3]
@@ -182,45 +163,37 @@ irfresults <- irf(B = phi_array,smat = B0,nstep = h)
 # - Extract response for each variable - This tedious, for the time being 
 # - Then add back into new irfstorage with horizon sequence for analysis of impulse response functions
 ######################################################################################
-# Shocks From Variable 1
-one_on_1<- irfresults[1,1,]
-one_on_2 <-irfresults[1,2,]
-one_on_3 <- irfresults[1,3,]
-# Shocks From Variable 2
-two_on_1<- irfresults[2,1,]
-two_on_2 <-irfresults[2,2,]
-two_on_3 <- irfresults[2,3,]
-# Shocks From Variable 3
-three_on_1<- irfresults[3,1,]
-three_on_2 <-irfresults[3,2,]
-three_on_3 <- irfresults[3,3,]
+# Storage
+HorMat <- matrix(0,h,h)
+for (t in 1:h){
+    HorMat[,t] <- irfresults[,,t]
+}
 
-
-Shocks_Storage = cbind.data.frame(one_on_1,one_on_2,one_on_3,two_on_1,two_on_2,two_on_3,
-                                  three_on_1,three_on_2,three_on_3)
-Shocks_Storage <- as.matrix(Shocks_Storage)
-L_L= ncol(Shocks_Storage)
-
-
-### % VAR bootstrap Confidence Intervals, Kilian & Lütkepohl (2017)
+############ % VAR bootstrap Confidence Intervals, Kilian & Lütkepohl (2017) ############
 # Set Initial Conditions and Storage Matrices 
-set.seed(12345)
+set.seed(123456)
 reps <- 2000
 Psi_i <- X %*% A
-Irfstor <- matrix(0,reps,(h)*(L_L))
-namessr <- rep(c('one_on_1','one_on_2','one_on_3','two_on_1','two_on_2','two_on_3'
-                 ,'three_on_1','three_on_2','three_on_3'),times=16)
+PC <- ncol(Psi_i)
+PR <- nrow(Psi_i)
+HorMat <- matrix(0,h,h)
+Irfstor <- matrix(0,reps,(h)^2)
+namessr <- rep(c("1.1","1.2","1.3","1.4","2.1","2.2","2.3","2.4","3.1","3.2","3.3","3.4","4.1","4.2","4.3","4.4"),times=h)
 colnames(Irfstor) <- namessr
 ## Bootstrap Algorithm - see Kilian & Lütkepohl(2017) for details 
-bootstrap <- function(Y,E,Psi_i,reps,p,h,Irfstor){
+bootstrap <- function(Y,E,Psi_i,reps,p,h,Irfstor,HorMat){
     for (i in 1:reps){
         if(i %% 500 == 0){
             
-            cat("draw no.",i,"\n")}
-        # Resample Errors With Replacement - # Centered Residuals 
-        Ur <- E[sample.int(nrow(E)),]
-        # generate Y
-        Y <- Psi_i + Ur    
+            cat("Simulation no.",i,"\n")}
+   
+        # NonParametric Bootstrap
+        Ur <-matrix(sample(E,length(E),replace = TRUE),PR,PC)
+        Yx <- matrix(sample(Psi_i,length(Psi_i),replace = TRUE),PR,PC)
+        #Parametric Bootstrap
+        #Ur <- matrix(rnorm(PR*PC,0,1),PR,PC)
+        #Yx <- matrix(rnorm(PR*PC,0,1),PR,PC)
+        Y <- Yx + Ur    
         
         Xlag <- Y_l(Y,p)
         Y <- Y[(p+1):nrow(Y),,drop=FALSE] 
@@ -230,8 +203,7 @@ bootstrap <- function(Y,E,Psi_i,reps,p,h,Irfstor){
         VAR_Est_b <- OLSReg(X,Y)
         A_b <- VAR_Est_b$A
         Sigma2_b <- VAR_Est_b$Sigma2
-        B0 <- solve(t(chol((Sigma2_b))))
-        
+        B0 <- t(chol(Sigma2_b))
         
         phi_array_b <- array(0,c(M,M,p))
         for (k in 1:p){
@@ -239,74 +211,45 @@ bootstrap <- function(Y,E,Psi_i,reps,p,h,Irfstor){
         }
         irfresults_b <- irf(B = phi_array_b,smat = B0,nstep = h)
         
-        # Shocks From Variable 1
-        one_on_1<- irfresults_b[1,1,] 
-        one_on_2 <-irfresults_b[1,2,]
-        one_on_3 <- irfresults_b[1,3,]
-        # Shocks From Variable 2
-        two_on_1<- irfresults_b[2,1,]
-        two_on_2 <-irfresults_b[2,2,]
-        two_on_3 <- irfresults_b[2,3,]
-        # Shocks From Variable 3
-        three_on_1<- irfresults_b[3,1,]
-        three_on_2 <-irfresults_b[3,2,]
-        three_on_3 <- irfresults_b[3,3,]
+        #Store Shocks for each horizon 
+        for (m in 1:h){
+            HorMat[,m] <- irfresults_b[,,m]
+            }
         
-        
-        Shocks_Storage_b = cbind.data.frame(one_on_1,one_on_2,one_on_3,two_on_1,two_on_2,two_on_3,
-                                            three_on_1,three_on_2,three_on_3)
-        Shocks_Storage_b <- as.matrix(Shocks_Storage_b)
         # Store Responses 
-        Irfstor[i,] <- vec(Shocks_Storage_b)
+        Irfstor[i,] <- vec(HorMat)
         
-    }
+    }    
     return(list(IRF=Irfstor))
 }
-results <- bootstrap(Yx,E,Psi_i,reps,p,h,Irfstor)
+results <- bootstrap(Yx,E,Psi_i,reps,p,h,Irfstor,HorMat)
 ### Plotting Time ####
 ### Extract Reps for Each Shock and Insert to a Matrix
 res <- data.frame(results$IRF)
 
-Median_B <- round(apply(res,2,mean),4)
-Lower_B <- round(apply(res,2,quantile,0.05),4)
-Upper_B <- round(apply(res,2,quantile,0.95),4)
+
+Median_B <- apply(res,2,median)
+Lower_B <- apply(res,2,quantile,0.05)
+Upper_B <- apply(res,2,quantile,0.95)
 
 
-res_m_m <- matrix(0,h,L_L)
-colnames(res_m_m) <- c("1.1","1.2","1.3","2.1","2.2","2.3","3.1","3.2","3.3")
-res_m_u <- matrix(0,h,L_L)
-colnames(res_m_u) <- c("1.1","1.2","1.3","2.1","2.2","2.3","3.1","3.2","3.3")
-res_m_l <- matrix(0,h,L_L)
-colnames(res_m_l) <- c("1.1","1.2","1.3","2.1","2.2","2.3","3.1","3.2","3.3")
+res_m_m <- matrix(0,h,h)
+colnames(res_m_m) <- c("1.1","1.2","1.3","1.4","2.1","2.2","2.3","2.4","3.1","3.2","3.3","3.4","4.1","4.2","4.3","4.4")
+res_m_u <- matrix(0,h,h)
+colnames(res_m_u) <- c("1.1","1.2","1.3","1.4","2.1","2.2","2.3","2.4","3.1","3.2","3.3","3.4","4.1","4.2","4.3","4.4")
+res_m_l <- matrix(0,h,h)
+colnames(res_m_l) <- c("1.1","1.2","1.3","1.4","2.1","2.2","2.3","2.4","3.1","3.2","3.3","3.4","4.1","4.2","4.3","4.4")
+
 
 for (i in 1:ncol(res_m_m)){
-    res_m_m[,i] <- Median_B[seq(i,length(Median_B),9)]
+    res_m_m[,i] <- Median_B[seq(i,length(Median_B),h)]
 }
 for (i in 1:ncol(res_m_l)){
-    res_m_l[,i] <- Lower_B[seq(i,length(Lower_B),9)]
+    res_m_l[,i] <- Lower_B[seq(i,length(Lower_B),h)]
 }
 
 for (i in 1:ncol(res_m_u)){
-    res_m_u[,i] <- Upper_B[seq(i,length(Upper_B),9)]
+    res_m_u[,i] <- Upper_B[seq(i,length(Upper_B),h)]
 }
-
-
-## Example Plot Impulse Response Function 
-
-horizon <- seq(1,16)
-
-plot(horizon,res_m_m[,1],type = "l", col="red", lty=1, ylim=c(-3,3))
-points(horizon, res_m_u[,1], type = "l",col="black")
-lines(horizon, res_m_u[,1], col="black",lty=2)
-points(horizon, res_m_l[,1], type = "l",col="black")
-lines(horizon, res_m_l[,1], col="black",lty=3)
-
-
-plot(horizon,res_m_m[,2],type = "l", col="red", lty=1, ylim=c(-3,5))
-points(horizon, res_m_u[,2], type = "l",col="black")
-lines(horizon, res_m_u[,2], col="black",lty=2)
-points(horizon, res_m_l[,2], type = "l",col="black")
-lines(horizon, res_m_l[,2], col="black",lty=3)
-
 
 
