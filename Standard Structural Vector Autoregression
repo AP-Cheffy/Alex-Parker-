@@ -9,15 +9,8 @@ library(standardize)
 library(arrayhelpers)
 library(matrixcalc)
 #Import Data
-termstr <- read.csv("/Users/geoffreyaparker/Documents/R&Python&Matlab/R Code/IN PROGRESS/VAR/Book1.csv",header = TRUE, na.strings = "")
-data.frame(termstr)
-termstr <- termstr[142:220,]
-i_t <- as.numeric(termstr[,"X3MonthRate"] - termstr[,"FedFund"])
-m_t <- as.numeric(termstr[,"GDP"])
-h_t <- as.numeric(termstr[,"Def"])
-y_t <- diff(log(m_t) -log(h_t))
-u_t <- diff(as.numeric(termstr[,"Unemployment"]))
-e_x <- diff(termstr[,"C.U"])
+data <- read.csv("",header = TRUE, na.strings = "")
+
 
 #Y is defined in the recursive order ----> Update Accordingly
 Y <- cbind(e_x,y_t,u_t,i_t)
